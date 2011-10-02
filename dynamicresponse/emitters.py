@@ -42,13 +42,14 @@ class Emitter(object):
         'exclude'
     ])
 
-    def __init__(self, payload, typemapper, handler, fields=(), anonymous=True):
+    def __init__(self, payload, typemapper, handler, fields=(), custom_fields=False, anonymous=True):
         
         self.typemapper = typemapper
         self.data = payload
         self.handler = handler
         self.fields = fields
         self.anonymous = anonymous
+        self.custom_fields = custom_fields
         
         if isinstance(self.data, Exception):
             raise
@@ -64,7 +65,7 @@ class Emitter(object):
 
             if t and callable(t):
                 ret[field] = t
-
+        
         return ret
     
     def construct(self):
@@ -75,18 +76,18 @@ class Emitter(object):
         
         Returns `dict`.
         """
-
-        def _any(thing, fields=()):
+        
+        def _any(thing, fields=(), paginated=False):
             """
             Dispatch, all types are routed through here.
             """
             
             ret = None
-            
             if isinstance(thing, QuerySet):
                 ret = _qs(thing, fields=fields)
             elif isinstance(thing, Page):
-                ret = _list(thing.object_list, fields=fields)
+                data = _list(thing.object_list, fields=fields, paginated=True)
+                ret = {'data':data, 'paginator':_paginator(thing)}
             elif isinstance(thing, (tuple, list)):
                 ret = _list(thing, fields=fields)
             elif isinstance(thing, dict):
@@ -94,7 +95,7 @@ class Emitter(object):
             elif isinstance(thing, decimal.Decimal):
                 ret = str(thing)
             elif isinstance(thing, Model):
-                ret = _model(thing, fields=fields)
+                ret = _model(thing, fields=fields, paginated=paginated)
             elif inspect.isfunction(thing):
                 if not inspect.getargspec(thing)[0]:
                     ret = _any(thing())
@@ -130,7 +131,7 @@ class Emitter(object):
             
             return [ _model(m, fields) for m in getattr(data, field.name).iterator() ]
         
-        def _model(data, fields=()):
+        def _model(data, fields=(), paginated=False):
             """
             Models. Will respect the `fields` and/or
             `exclude` on the handler (see `typemapper`.)
@@ -139,26 +140,30 @@ class Emitter(object):
             ret = { }
             handler=None
             
-            # Does the model implement get_serialization_fields() or serialize_fields()?
+            # Does the model implement get_json_fields()?
             # We should only serialize these fields.
-            if hasattr(data, 'get_serialization_fields'):
-                fields = set(data.get_serialization_fields())
-            if hasattr(data, 'serialize_fields'):
-                fields = set(data.serialize_fields())
+                            
+            if not fields and hasattr(data, 'get_json_fields'):
+                fields = set(data.get_json_fields(paginated=paginated))
+                
+                if hasattr(data, 'get_absolute_url'):
+                    fields.add('get_absolute_url')
                     
+                if hasattr(data, 'resource_uri'):   
+                    fields.add('resource_uri')
+                
             # Is the model a user instance?
             # Ensure that only core (non-sensitive fields) are serialized
             if isinstance(data, User):
-                fields = ('id', 'email', 'first_name')
+                fields = ('id', 'email', 'first_name', 'last_name', 'username')
                 
             # Should we explicitly serialize specific fields?
             if fields:
-                
                 v = lambda f: getattr(data, f.attname)
-
+                
                 get_fields = set(fields)
                 met_fields = self.method_fields(handler, get_fields)
-                           
+                
                 # Serialize normal fields
                 for f in data._meta.local_fields:
                     if f.serialize and not any([ p in met_fields for p in [ f.attname, f.name ]]):
@@ -170,7 +175,7 @@ class Emitter(object):
                             if f.attname[:-3] in get_fields:
                                 ret[f.name] = _fk(data, f)
                                 get_fields.remove(f.name)
-                
+               
                 # Serialize many-to-many fields
                 for mf in data._meta.many_to_many:
                     if mf.serialize and mf.attname not in met_fields:
@@ -180,6 +185,7 @@ class Emitter(object):
                 
                 # Try to get the remainder of fields
                 for maybe_field in get_fields:
+                                                
                     if isinstance(maybe_field, (list, tuple)):
                         model, fields = maybe_field
                         inst = getattr(data, model, None)
@@ -203,7 +209,7 @@ class Emitter(object):
                         maybe = getattr(data, maybe_field, None)
                         if maybe:
                             if callable(maybe):
-                                if len(inspect.getargspec(maybe)[0]) == 1:
+                                if len(inspect.getargspec(maybe)[0]) <= 1:
                                     ret[maybe_field] = _any(maybe())
                             else:
                                 ret[maybe_field] = _any(maybe)
@@ -214,6 +220,12 @@ class Emitter(object):
                 
                 for f in data._meta.fields:
                     ret[f.attname] = _any(getattr(data, f.attname))
+                
+                if hasattr(data, 'get_absolute_url'):
+                    ret['get_absolute_url'] = _any(getattr(data, 'get_absolute_url')())
+
+                if hasattr(data, 'resource_uri'):
+                    ret['resource_uri'] = _any(getattr(data, 'resource_uri')())
                 
                 fields = dir(data.__class__) + ret.keys()
                 add_ons = [k for k in dir(data) if k not in fields]
@@ -228,25 +240,43 @@ class Emitter(object):
             """
             Querysets.
             """
-            
             return [ _any(v, fields) for v in data ]
                 
-        def _list(data, fields=()):
+        def _list(data, fields=(), paginated=False):
             """
             Lists.
             """
-            
-            return [ _any(v, fields) for v in data ]
+            return [ _any(v, fields, paginated) for v in data ]
             
         def _dict(data, fields=()):
             """
             Dictionaries.
             """
+            rt = []
             
-            return dict([ (k, _any(v, fields)) for k, v in data.iteritems() ])
+            for k, v in data.iteritems():
+                if self.custom_fields and self.custom_fields.has_key(k):
+                    fields = self.custom_fields[k]
+                else:
+                    fields = ()
+                
+                rt.append((k, _any(v, fields)))
             
+            return dict(rt)
+
+        def _paginator(data):
+            return {
+                'num_pages': data.paginator.num_pages,
+                'number': data.number,
+                'has_next': data.has_next(),
+                'next_page_number': data.next_page_number(),
+                'has_previous': data.has_previous(),
+                'previous_page_number': data.previous_page_number()
+            }
+        
         # Kickstart the seralizin'.
-        return _any(self.data, self.fields)
+        
+        return _any(self.data)
     
     def in_typemapper(self, model, anonymous):
         for klass, (km, is_anon) in self.typemapper.iteritems():
@@ -266,7 +296,7 @@ class JSONEmitter(Emitter):
     """
 
     def render(self):
-
+        
         indent = 0
         if settings.DEBUG:
             indent = 4
