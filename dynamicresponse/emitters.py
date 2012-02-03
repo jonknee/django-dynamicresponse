@@ -81,7 +81,6 @@ class Emitter(object):
             """
             Dispatch, all types are routed through here.
             """
-            
             ret = None
             if isinstance(thing, QuerySet):
                 ret = _qs(thing, fields=fields)
@@ -93,7 +92,7 @@ class Emitter(object):
             elif isinstance(thing, dict):
                 ret = _dict(thing, fields=fields)
             elif isinstance(thing, decimal.Decimal):
-                ret = str(thing)
+                ret = float(thing)
             elif isinstance(thing, Model):
                 ret = _model(thing, fields=fields, paginated=paginated)
             elif inspect.isfunction(thing):
