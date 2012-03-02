@@ -32,6 +32,10 @@ Add the two middleware classes to `MIDDLEWARE_CLASSES` in your `settings.py`:
 
 `DynamicFormatMiddleware` decodes incoming JSON content into `request.POST`, as well as rendering appropriate responses based on the returned value from your views.
 
+## Tests
+
+Run unit-tests by running <code>python setup.py test</code>
+
 ## Usage
 
 See the included [sample project](http://github.com/funkbit/django-dynamicresponse/tree/master/examples/) for sample code using the framework to implement a simple blog application.
@@ -85,7 +89,7 @@ Content is normally returned as JSON with HTTP status code `200`. If you want to
     </tr>
     <tr>
         <td><code>CR_INVALID_DATA</code></td>
-        <td><code>402</code></td>
+        <td><code>400</code></td>
         <td>One or more forms are invalid</td>
     </tr>
     <tr>
